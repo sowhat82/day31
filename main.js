@@ -1,21 +1,63 @@
-const morgan = require('morgan')
+// passort core
 const passport = require('passport');
+//passport strategy
 const LocalStrategy = require('passport-local').Strategy;
+
+const morgan = require('morgan')
 const express = require('express');
-const bodyParser = require('body-parser');
 const mysql = require('mysql2/promise')
 const secureEnv = require('secure-env')
 const PORT = parseInt(process.argv[2]) || parseInt(process.env.PORT) || 3000
-
+const jwt = require('jsonwebtoken')
 global.env = secureEnv({secret:'mySecretPassword'})
-
+const TOKEN_SECRET = global.env.TOKEN_SECRET || 'secret'
 const app = express();
 
 app.use(morgan('combined'))
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded());
+app.use (express.json())
+app.use(express.urlencoded({extended:true}))
 
-// create connection pool
+// initialize passport only afer json and form-urlencoded
+app.use(passport.initialize())
+
+passport.use(
+    new LocalStrategy(
+        {
+            usernameField: 'username',
+            passwordField: 'password',
+            passReqToCallback: true // to be able to use req below to obtain more information from the request
+        },
+        async (req, username, password, done) => {
+            // perform authentication
+            const conn = await pool.getConnection()
+            const [ result, _ ] = await conn.query( 'select user_id from user where user_id like ? and password like sha1(?)', [username, password],)
+
+            console.info('result', result.length)
+            if (result.length) {
+
+                authResult = true
+            }
+            else {
+                authResult = false
+            }
+
+            if(authResult){
+                done(null,
+                    // info about the user
+                    {
+                        username: username,
+                        loginTime: new Date().toString(),
+                    }    
+                )    
+                return
+            }
+            // incorrect login
+            done ('Incorrect username and password', false)
+        }
+    )
+)
+
+// create SQL connection pool
 const pool = mysql.createPool({
 	host: process.env.DB_HOST || 'localhost',
 	port: parseInt(process.env.DB_PORT) || 3306,
@@ -44,3 +86,86 @@ const startApp = async (app, pool) => {
 
 // start the app
 startApp(app, pool)
+
+app.post('/login', 
+// passport.authenticate('local', {session: false}),
+    (req, resp, next)=>{
+        const func = passport.authenticate('local',
+            (err, user, info)=>{
+                if (null != err) {
+                    resp.status(401)
+                    resp.json({error: err})
+                    return
+                }
+                // attach user to request object
+                req.user = user
+                next()  // call the next middleware if there's no error
+            }
+        ) 
+        func(req, resp, next)
+    },
+    (req, resp)=> {
+        // do something
+        const currTime = (new Date()).getTime()/1000
+
+        console.info( currTime)
+        // generate JWT token
+        const token = jwt.sign(
+            {
+                sub: req.user.username,
+                iss: 'myapp',
+                iat: currTime,
+                exp: currTime + (60 * 60), // token expiring in x seconds
+                data: {
+                    avatar: 'your avatar',
+                    loginTime: req.user.loginTime
+                }
+            },
+            TOKEN_SECRET
+        )
+
+        resp.status(200)
+        resp.type('application/json')
+        resp.json({message: 'login on this date', token})
+    }
+)
+
+// auth to check for this format in http header: bearer <token>
+app.get('/protected/secret',
+    (req, resp, next) => {
+        // check if the request has 'authorization' header
+        const auth = req.get('Authorization')
+        if (null == auth){
+            resp.status(403)
+            resp.json({message: 'Missing authorization access'})
+            return
+        }
+
+        // check for bearer type auth
+        const terms = auth.split(' ')
+        if (terms.length != 2 || terms[0] != 'Bearer'){
+            resp.status(403)
+            resp.json({message: 'Incorrect authorization access'})
+            return
+        }
+        
+        const token = terms[1]
+        
+        token.exp
+        try{
+            const verified = jwt.verify(token, TOKEN_SECRET)
+            req.token = verified
+            next()
+        } 
+        catch(e){
+            resp.status(403)
+            resp.json({message: 'Incorrect token', error: e})
+            return
+        }
+    },
+
+    (req, resp) => {
+        resp.status(200)
+        resp.json({abc: 'abc'})
+    }
+)
