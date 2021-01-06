@@ -92,9 +92,10 @@ app.post('/login',
     (req, resp, next)=>{
         const func = passport.authenticate('local',
             (err, user, info)=>{
-                if (null != err) {
+                if (null != err || !user) {
                     resp.status(401)
                     resp.json({error: err})
+                    console.info(err)
                     return
                 }
                 // attach user to request object
